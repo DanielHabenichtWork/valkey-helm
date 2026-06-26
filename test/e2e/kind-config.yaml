@@ -1,0 +1,14 @@
+# Multi-node kind cluster used by every e2e testing layer (helm-test smoke + Chainsaw).
+#
+# 1 control-plane + 3 workers so Valkey pods can spread across nodes. The helm-test
+# smoke layer only needs a single node, but it shares this config with the Chainsaw
+# layers so there is exactly one cluster definition and CI/local can't drift. The
+# extra workers are the seam for evolving pod-kill tests into node-drain/cordon tests
+# later (see test/e2e/README.md "Out of scope").
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+  - role: worker
+  - role: worker
+  - role: worker

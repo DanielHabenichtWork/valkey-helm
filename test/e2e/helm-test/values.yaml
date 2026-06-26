@@ -1,0 +1,39 @@
+# Values for the standalone `helm test` smoke layer (layer 2).
+#
+# Goal: install a minimal, single-pod Valkey with authentication ENABLED so the
+# chart's packaged auth test hook (valkey/templates/tests/auth.yaml) actually
+# renders and runs against a live cluster via `helm test <release>`.
+#
+# The auth test hook (and the -auth Secret it reads) only render when:
+#   * auth.enabled = true, AND
+#   * at least one auth.aclUsers entry has an inline `password`
+# (see valkey/templates/secret.yaml and valkey/templates/tests/auth.yaml).
+# The chart also requires a `default` user whenever auth is enabled
+# (see valkey.validateAuthConfig in valkey/templates/_helpers.tpl).
+#
+# This file is intentionally self-contained so the helm-test layer is portable and
+# self-describing — a chart consumer can copy it and run `helm test` against their
+# own release. See HANDOVER.md.
+
+# Standalone (single pod) — the smoke layer only needs to prove a live install
+# comes up and serves authenticated traffic. HA/failover lives in the Chainsaw layer.
+replica:
+  enabled: false
+
+auth:
+  enabled: true
+  aclUsers:
+    # The chart fails to render if `default` is missing when auth is enabled.
+    # Full permissions so the hook's SET/GET write check exercises the happy path.
+    default:
+      permissions: "~* &* +@all"
+      password: "helm-test-smoke-password"
+
+# Modest footprint so the install schedules comfortably on a kind node.
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 250m
+    memory: 256Mi
