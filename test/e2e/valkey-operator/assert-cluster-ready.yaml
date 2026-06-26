@@ -1,0 +1,9 @@
+# Asserts the operator has brought the ValkeyCluster to a fully-formed state.
+# Chainsaw polls the CR's .status subresource until this holds (or times out).
+apiVersion: valkey.io/v1alpha1
+kind: ValkeyCluster
+metadata:
+  name: my-cluster
+status:
+  state: Ready
+  readyShards: 3

@@ -1,0 +1,36 @@
+# HA test values for the valkey chart Chainsaw suite.
+#
+# replica.enabled + replicas:2 -> a StatefulSet of 3 pods (valkey-0 = primary,
+# valkey-1/-2 = replicas), each with its own PVC. auth is enabled with a default
+# user (also used as the replication user) so the install mirrors a realistic HA
+# deployment. appendonly persistence is enabled so the sentinel key survives a
+# primary pod restart (the plain chart has no auto-failover — pod-0 reloads its
+# AOF from the PVC on restart).
+replica:
+  enabled: true
+  replicas: 2
+  # default user is reused for replica->primary auth (needs replication perms,
+  # which "+@all" below covers).
+  replicationUser: "default"
+  persistence:
+    size: 1Gi
+
+auth:
+  enabled: true
+  aclUsers:
+    default:
+      permissions: "~* &* +@all"
+      password: "valkey-e2e-password"
+
+# Enable AOF persistence to /data (the PVC) so data survives a primary restart.
+valkeyConfig: |
+  appendonly yes
+
+# Modest footprint so 3 pods schedule comfortably across the kind workers.
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 250m
+    memory: 256Mi

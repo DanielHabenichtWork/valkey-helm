@@ -1,0 +1,10 @@
+# Minimal ValkeyCluster CR for the operator e2e suite (matches the operator
+# README example). 3 shards, 1 replica per shard -> each shard group has a primary
+# + a replica, which is what makes the primary-failure / promotion test meaningful.
+apiVersion: valkey.io/v1alpha1
+kind: ValkeyCluster
+metadata:
+  name: my-cluster
+spec:
+  shards: 3
+  replicas: 1

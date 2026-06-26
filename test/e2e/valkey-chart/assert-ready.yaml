@@ -1,0 +1,10 @@
+# Asserts the valkey StatefulSet has all 3 pods ready (1 primary + 2 replicas).
+# Chainsaw treats this as a partial match and polls until it holds (or times out).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: valkey
+spec:
+  replicas: 3
+status:
+  readyReplicas: 3

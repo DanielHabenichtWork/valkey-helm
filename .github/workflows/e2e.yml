@@ -8,8 +8,8 @@ name: E2E (live cluster)
 # the cluster here instead of `just e2e-up`. This is what keeps CI and local from
 # drifting.
 #
-# Currently implemented: layer 2 (helm test smoke). The Chainsaw layers
-# (valkey-chart, valkey-operator) land as additional jobs in a follow-up.
+# Jobs: helm-test (layer 2 smoke) + valkey-chart / valkey-operator (layer 3
+# Chainsaw e2e + failure injection). Each calls the same Just target as local.
 
 on:
   pull_request:
@@ -60,3 +60,59 @@ jobs:
 
       - name: helm test smoke (just helm-test)
         run: just helm-test
+
+  # Layer 3: full deploy -> readiness -> pod-kill -> recovery for the chart.
+  valkey-chart:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.19.4
+
+      - name: Set up Just
+        uses: extractions/setup-just@v2
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: valkey-e2e
+          config: test/e2e/kind-config.yaml
+          node_image: kindest/node:v1.31.6
+
+      - name: Install Chainsaw
+        uses: kyverno/action-install-chainsaw@v0.2.12
+
+      - name: Chainsaw valkey chart suite (just e2e-valkey)
+        run: just e2e-valkey
+
+  # Layer 3: operator install -> cluster Ready -> primary-failure -> promotion.
+  valkey-operator:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.19.4
+
+      - name: Set up Just
+        uses: extractions/setup-just@v2
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: valkey-e2e
+          config: test/e2e/kind-config.yaml
+          node_image: kindest/node:v1.31.6
+
+      - name: Install Chainsaw
+        uses: kyverno/action-install-chainsaw@v0.2.12
+
+      - name: Chainsaw valkey-operator suite (just e2e-operator)
+        run: just e2e-operator

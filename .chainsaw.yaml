@@ -1,0 +1,18 @@
+# Chainsaw configuration for the layer-3 e2e + failure-injection suites.
+#
+# Valkey rollout and operator reconciliation are slow (image pulls, StatefulSet
+# ordered startup, replica sync, operator promotion), so assert/exec timeouts are
+# deliberately generous. Each Test runs in its own ephemeral namespace, which
+# Chainsaw creates and tears down automatically.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Configuration
+metadata:
+  name: valkey-e2e
+spec:
+  timeouts:
+    apply: 2m
+    assert: 8m
+    cleanup: 3m
+    delete: 2m
+    error: 2m
+    exec: 6m

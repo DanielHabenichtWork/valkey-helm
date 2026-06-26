@@ -104,3 +104,48 @@ helm-test:
     echo "=== Running chart test hooks: helm test {{helm_test_release}} ==="
     helm test "{{helm_test_release}}" --namespace "{{helm_test_namespace}}" --logs
 
+# ---------------------------------------------------------------------------
+# Layer 3: Chainsaw e2e + failure injection (deploy -> assert -> kill -> recover).
+# Each suite runs in its own ephemeral namespace and uses the current kubeconfig
+# (the kind cluster). Assumes a cluster is up; in CI the cluster is provided by
+# helm/kind-action and these same targets are called directly.
+# ---------------------------------------------------------------------------
+
+# Layer 3: primary/replica chart e2e + pod-kill/recovery
+e2e-valkey:
+    @echo "=== Layer 3: Chainsaw valkey chart suite ==="
+    chainsaw test test/e2e/valkey-chart
+
+# Layer 3: operator / cluster-mode e2e + primary-failure/promotion
+e2e-operator:
+    @echo "=== Layer 3: Chainsaw valkey-operator suite ==="
+    chainsaw test test/e2e/valkey-operator
+
+# One-command path: cluster up -> all layers -> teardown.
+# Teardown runs even if a layer fails. `just e2e keep=1` leaves the cluster up.
+e2e keep="0":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cleanup() {
+      if [ "{{keep}}" = "1" ]; then
+        echo "=== keep=1: leaving cluster '{{e2e_cluster}}' up (run 'just e2e-down' to remove) ==="
+      else
+        just e2e-down
+      fi
+    }
+    trap cleanup EXIT
+    just e2e-up
+    just helm-test
+    just e2e-valkey
+    just e2e-operator
+    echo "=== All e2e layers passed ==="
+
+# Bring the cluster up and leave it running so you can iterate on a single suite
+# (e.g. `just e2e-debug` then rerun `just e2e-valkey` / `just helm-test`).
+e2e-debug: e2e-up
+    @echo "Cluster '{{e2e_cluster}}' is up. Rerun a single target, e.g.:"
+    @echo "  just helm-test    # layer 2 smoke"
+    @echo "  just e2e-valkey   # layer 3 chart suite"
+    @echo "  just e2e-operator # layer 3 operator suite"
+    @echo "Tear down with: just e2e-down"
+
