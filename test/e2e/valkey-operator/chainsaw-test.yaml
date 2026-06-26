@@ -2,9 +2,15 @@
 # readiness via .status -> primary pod-kill -> operator-driven recovery (replica
 # promotion / reconciliation) -> data-survival.
 #
-# Cluster pods are connected to by pod-exec: the operator-managed Service name lives
-# in the operator source (not this repo), so exec is the robust path. The minimal CR
-# does not enable auth, so valkey-cli needs no credentials here.
+# Notes:
+# - Chainsaw auto-injects $NAMESPACE and runs scripts with cwd = this test dir, so
+#   the chart is referenced as ../../../valkey-operator.
+# - Cluster pods are reached by pod-exec: the operator-managed Service name lives in
+#   the operator source (not this repo), so exec is the robust path. The minimal CR
+#   does not enable auth, so valkey-cli needs no credentials here.
+# - The primary pod is deleted with `kubectl delete` inside a script (its name is
+#   discovered dynamically, and Chainsaw's `delete` would block on the same-name
+#   pod the operator recreates).
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -25,14 +31,7 @@ spec:
       description: helm install the operator (public ghcr image) and wait for it to be Available.
       try:
         - script:
-            env:
-              - name: NAMESPACE
-                value: ($namespace)
-            content: |
-              set -eu
-              # Chainsaw runs scripts with cwd = this test dir; chart is at repo root.
-              helm upgrade --install valkey-operator ../../../valkey-operator \
-                --namespace "$NAMESPACE"
+            content: helm upgrade --install valkey-operator ../../../valkey-operator -n "$NAMESPACE"
         - assert:
             resource:
               apiVersion: apps/v1
@@ -54,19 +53,12 @@ spec:
       description: Write keys across slots via cluster-mode SET on a cluster pod.
       try:
         - script:
-            env:
-              - name: NAMESPACE
-                value: ($namespace)
             content: |
               set -eu
-              POD=$(kubectl get pods -n "$NAMESPACE" -o name | grep my-cluster | head -1 | cut -d/ -f2)
-              [ -n "$POD" ] || { echo "✗ no cluster pods found"; exit 1; }
-              echo "Seeding keys via $POD (cluster mode)..."
+              POD=$(kubectl -n "$NAMESPACE" get pods -o name | grep my-cluster | head -1 | cut -d/ -f2)
               for k in alpha bravo charlie delta echo; do
-                kubectl exec -n "$NAMESPACE" "$POD" -- \
-                  valkey-cli -c SET "e2e:$k" "val-$k"
+                kubectl -n "$NAMESPACE" exec "$POD" -- valkey-cli -c SET "e2e:$k" "val-$k"
               done
-              echo "✓ seeded 5 keys across slots"
 
     - name: primary-failure
       description: |
@@ -75,39 +67,23 @@ spec:
         (survives via replication / promotion — no disk persistence needed).
       try:
         - script:
-            env:
-              - name: NAMESPACE
-                value: ($namespace)
             content: |
               set -eu
-              # Find a pod that currently reports role "master" and delete it.
-              PRIMARY=""
-              for p in $(kubectl get pods -n "$NAMESPACE" -o name | grep my-cluster | cut -d/ -f2); do
-                R=$(kubectl exec -n "$NAMESPACE" "$p" -- valkey-cli ROLE 2>/dev/null | head -1 || true)
-                if [ "$R" = "master" ]; then PRIMARY="$p"; break; fi
+              # Find the pod currently reporting role "master" and delete it.
+              for p in $(kubectl -n "$NAMESPACE" get pods -o name | grep my-cluster); do
+                if [ "$(kubectl -n "$NAMESPACE" exec "${p#pod/}" -- valkey-cli ROLE 2>/dev/null | head -1)" = master ]; then
+                  kubectl -n "$NAMESPACE" delete "$p"
+                  exit 0
+                fi
               done
-              [ -n "$PRIMARY" ] || { echo "✗ could not find a primary pod"; exit 1; }
-              echo "Deleting primary pod $PRIMARY..."
-              kubectl delete pod -n "$NAMESPACE" "$PRIMARY"
-        # Operator should reconcile back to a fully-ready cluster.
+              echo "could not find a primary pod"; exit 1
         - assert:
             file: assert-cluster-ready.yaml
         - script:
-            env:
-              - name: NAMESPACE
-                value: ($namespace)
             content: |
               set -eu
-              POD=$(kubectl get pods -n "$NAMESPACE" -o name | grep my-cluster | head -1 | cut -d/ -f2)
-              [ -n "$POD" ] || { echo "✗ no cluster pods found"; exit 1; }
-              echo "Verifying seeded keys survived the primary failure..."
+              POD=$(kubectl -n "$NAMESPACE" get pods -o name | grep my-cluster | head -1 | cut -d/ -f2)
               for k in alpha bravo charlie delta echo; do
-                for i in $(seq 1 30); do
-                  VAL=$(kubectl exec -n "$NAMESPACE" "$POD" -- \
-                    valkey-cli -c GET "e2e:$k" 2>/dev/null || true)
-                  [ "$VAL" = "val-$k" ] && break
-                  sleep 2
-                done
-                [ "$VAL" = "val-$k" ] || { echo "✗ key e2e:$k lost (got '$VAL')"; exit 1; }
+                [ "$(kubectl -n "$NAMESPACE" exec "$POD" -- valkey-cli -c GET "e2e:$k" 2>/dev/null)" = "val-$k" ] \
+                  || { echo "key e2e:$k lost"; exit 1; }
               done
-              echo "✓ all keys survived primary failure"

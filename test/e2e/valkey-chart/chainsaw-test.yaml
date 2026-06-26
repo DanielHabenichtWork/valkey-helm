@@ -2,10 +2,14 @@
 # recovery -> data-survival. Chainsaw owns its own liveness assertions; it does
 # NOT call `helm test` (that is the standalone smoke layer's job).
 #
-# Helm isn't a native Chainsaw operation, so installs run in `script` steps; every
-# declarative check (assert/delete) is plain Chainsaw. valkey-cli is confined to
-# small script steps that read the password from the chart-generated -auth Secret
-# (so the password can't drift from values.yaml).
+# Notes:
+# - Chainsaw auto-injects $NAMESPACE (the test's ephemeral namespace) and runs
+#   scripts with cwd = this test dir, so the chart is referenced as ../../../valkey.
+# - Pods are deleted with `kubectl delete` inside a script, NOT Chainsaw's `delete`
+#   operation: `delete` blocks until the object is gone, but the StatefulSet
+#   immediately recreates the pod with the same name, so that wait never resolves.
+# - valkey-cli reads the password from the chart-generated -auth Secret so it can't
+#   drift from values.yaml.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -24,16 +28,10 @@ spec:
       description: helm install the valkey chart in HA mode with auth.
       try:
         - script:
-            env:
-              - name: NAMESPACE
-                value: ($namespace)
             content: |
               set -eu
-              # Chainsaw runs scripts with cwd = this test dir; chart is at repo root.
               helm dependency build ../../../valkey
-              helm upgrade --install valkey ../../../valkey \
-                --namespace "$NAMESPACE" \
-                --values values.yaml
+              helm upgrade --install valkey ../../../valkey -n "$NAMESPACE" -f values.yaml
 
     - name: ready
       description: All 3 pods (1 primary + 2 replicas) become Ready.
@@ -45,58 +43,34 @@ spec:
       description: Write a sentinel key on the primary and confirm it replicates.
       try:
         - script:
-            env:
-              - name: NAMESPACE
-                value: ($namespace)
             content: |
               set -eu
-              PASS=$(kubectl get secret valkey-auth -n "$NAMESPACE" \
-                -o jsonpath='{.data.default-password}' | base64 -d)
-              cli() { kubectl exec -n "$NAMESPACE" "$1" -c valkey -- \
-                valkey-cli --user default --pass "$PASS" --no-auth-warning "${@:2}"; }
-
-              echo "Writing sentinel on primary (valkey-0)..."
-              cli valkey-0 SET e2e-sentinel "hello-valkey"
-
-              echo "Waiting for replication to valkey-1..."
-              for i in $(seq 1 30); do
-                VAL=$(cli valkey-1 GET e2e-sentinel 2>/dev/null || true)
-                [ "$VAL" = "hello-valkey" ] && { echo "✓ replicated to valkey-1"; exit 0; }
+              PASS=$(kubectl -n "$NAMESPACE" get secret valkey-auth -o jsonpath='{.data.default-password}' | base64 -d)
+              cli() { pod=$1; shift; kubectl -n "$NAMESPACE" exec "$pod" -c valkey -- valkey-cli --user default --pass "$PASS" --no-auth-warning "$@"; }
+              cli valkey-0 SET e2e-sentinel hello-valkey
+              for i in $(seq 30); do
+                [ "$(cli valkey-1 GET e2e-sentinel 2>/dev/null)" = hello-valkey ] && exit 0
                 sleep 2
               done
-              echo "✗ sentinel did not replicate to valkey-1 within timeout"; exit 1
+              echo "sentinel did not replicate to valkey-1"; exit 1
 
     - name: replica-failure
       description: Kill a replica; StatefulSet self-heals and data survives the new PVC mount.
       try:
-        # Delete via kubectl (not Chainsaw's `delete`, which waits for the resource
-        # to disappear — the StatefulSet recreates valkey-1 with the same name, so
-        # that wait would never resolve). kubectl waits on the specific pod, then returns.
         - script:
-            env:
-              - name: NAMESPACE
-                value: ($namespace)
-            content: |
-              set -eu
-              kubectl delete pod -n "$NAMESPACE" valkey-1
+            content: kubectl -n "$NAMESPACE" delete pod valkey-1
         - assert:
             file: assert-ready.yaml
         - script:
-            env:
-              - name: NAMESPACE
-                value: ($namespace)
             content: |
               set -eu
-              PASS=$(kubectl get secret valkey-auth -n "$NAMESPACE" \
-                -o jsonpath='{.data.default-password}' | base64 -d)
-              echo "Verifying sentinel is readable on the recreated valkey-1..."
-              for i in $(seq 1 30); do
-                VAL=$(kubectl exec -n "$NAMESPACE" valkey-1 -c valkey -- \
-                  valkey-cli --user default --pass "$PASS" --no-auth-warning GET e2e-sentinel 2>/dev/null || true)
-                [ "$VAL" = "hello-valkey" ] && { echo "✓ data survived replica restart"; exit 0; }
+              PASS=$(kubectl -n "$NAMESPACE" get secret valkey-auth -o jsonpath='{.data.default-password}' | base64 -d)
+              cli() { kubectl -n "$NAMESPACE" exec valkey-1 -c valkey -- valkey-cli --user default --pass "$PASS" --no-auth-warning "$@"; }
+              for i in $(seq 30); do
+                [ "$(cli GET e2e-sentinel 2>/dev/null)" = hello-valkey ] && exit 0
                 sleep 2
               done
-              echo "✗ sentinel not readable on valkey-1 after restart"; exit 1
+              echo "sentinel not readable on valkey-1 after restart"; exit 1
 
     - name: primary-recovery
       description: |
@@ -105,31 +79,16 @@ spec:
         Replica promotion on primary loss is covered by the operator suite.
       try:
         - script:
-            env:
-              - name: NAMESPACE
-                value: ($namespace)
-            content: |
-              set -eu
-              kubectl delete pod -n "$NAMESPACE" valkey-0
+            content: kubectl -n "$NAMESPACE" delete pod valkey-0
         - assert:
             file: assert-ready.yaml
         - script:
-            env:
-              - name: NAMESPACE
-                value: ($namespace)
             content: |
               set -eu
-              PASS=$(kubectl get secret valkey-auth -n "$NAMESPACE" \
-                -o jsonpath='{.data.default-password}' | base64 -d)
-              echo "Verifying primary (valkey-0) serves and sentinel persists..."
-              for i in $(seq 1 30); do
-                ROLE=$(kubectl exec -n "$NAMESPACE" valkey-0 -c valkey -- \
-                  valkey-cli --user default --pass "$PASS" --no-auth-warning ROLE 2>/dev/null | head -1 || true)
-                VAL=$(kubectl exec -n "$NAMESPACE" valkey-0 -c valkey -- \
-                  valkey-cli --user default --pass "$PASS" --no-auth-warning GET e2e-sentinel 2>/dev/null || true)
-                if [ "$ROLE" = "master" ] && [ "$VAL" = "hello-valkey" ]; then
-                  echo "✓ primary recovered as master with data intact"; exit 0
-                fi
+              PASS=$(kubectl -n "$NAMESPACE" get secret valkey-auth -o jsonpath='{.data.default-password}' | base64 -d)
+              cli() { kubectl -n "$NAMESPACE" exec valkey-0 -c valkey -- valkey-cli --user default --pass "$PASS" --no-auth-warning "$@"; }
+              for i in $(seq 30); do
+                [ "$(cli ROLE 2>/dev/null | head -1)" = master ] && [ "$(cli GET e2e-sentinel 2>/dev/null)" = hello-valkey ] && exit 0
                 sleep 2
               done
-              echo "✗ primary did not recover with data (role=$ROLE val=$VAL)"; exit 1
+              echo "primary did not recover as master with data"; exit 1
