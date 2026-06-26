@@ -1,0 +1,34 @@
+# Layer 3 — valkey chart: deployment smoke.
+# Install the chart in HA mode + auth and assert all 3 pods (1 primary + 2 replicas)
+# become Ready. Failure/recovery scenarios live in ../resilience.
+#
+# Notes (shared by every test in this tree):
+# - Chainsaw auto-injects $NAMESPACE (the test's ephemeral namespace).
+# - The install script sets workDir to the repo root so chart/values paths are clean.
+# - Support files (values.yaml, assert-ready.yaml) are shared at the chart dir level
+#   and referenced with `../`.
+# - Universal failure diagnostics (events, describe pods) come from .chainsaw.yaml;
+#   each test adds only its chart-specific podLogs selector.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: valkey-chart-deploy
+spec:
+  catch:
+    - podLogs:
+        selector: app.kubernetes.io/name=valkey
+  steps:
+    - name: install
+      description: helm install the valkey chart in HA mode with auth.
+      try:
+        - script:
+            workDir: ../../../..
+            content: |
+              set -eu
+              helm dependency build ./valkey
+              helm upgrade --install valkey ./valkey -n "$NAMESPACE" -f test/e2e/valkey-chart/values.yaml
+    - name: ready
+      description: All 3 pods (1 primary + 2 replicas) become Ready.
+      try:
+        - assert:
+            file: ../assert-ready.yaml

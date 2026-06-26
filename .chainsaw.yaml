@@ -4,7 +4,11 @@
 # ordered startup, replica sync, operator promotion), so assert/exec timeouts are
 # deliberately generous. Each Test runs in its own ephemeral namespace, which
 # Chainsaw creates and tears down automatically.
-apiVersion: chainsaw.kyverno.io/v1alpha1
+#
+# `chainsaw test <chart-dir>` recurses into subdirectories, so each chart dir holds
+# multiple tests — one per subfolder (e.g. valkey-chart/deploy, valkey-chart/
+# resilience). Add a new scenario by adding a new subfolder with a chainsaw-test.yaml.
+apiVersion: chainsaw.kyverno.io/v1alpha2
 kind: Configuration
 metadata:
   name: valkey-e2e
@@ -16,3 +20,11 @@ spec:
     delete: 2m
     error: 2m
     exec: 6m
+  # Universal diagnostics dumped on any test failure (merged with each test's own
+  # chart-specific `catch`, e.g. podLogs selectors).
+  error:
+    catch:
+      - events: {}
+      - describe:
+          apiVersion: v1
+          kind: Pod

@@ -42,6 +42,8 @@ e2e_kind_config := "test/e2e/kind-config.yaml"
 # Release name for the helm-test smoke layer
 helm_test_release := "valkey-smoke"
 helm_test_namespace := "valkey-smoke"
+# Namespace for the shared, cluster-wide operator install (layer 3 operator suite)
+operator_namespace := "valkey-operator-system"
 
 # Check for e2e prerequisites; print install hints rather than failing cryptically
 e2e-tools:
@@ -116,9 +118,16 @@ e2e-valkey:
     @echo "=== Layer 3: Chainsaw valkey chart suite ==="
     chainsaw test test/e2e/valkey-chart
 
-# Layer 3: operator / cluster-mode e2e + primary-failure/promotion
+# Layer 3: operator / cluster-mode e2e + primary-failure/promotion.
+# The operator is a cluster-singleton (cluster-scoped RBAC + cluster-wide watch), so
+# it's installed ONCE here (cluster-wide) before Chainsaw runs; each test then just
+# creates a ValkeyCluster in its own ephemeral namespace and the shared operator
+# reconciles it. (Installing one operator per test would collide on the shared
+# cluster-scoped ClusterRoles.)
 e2e-operator:
     @echo "=== Layer 3: Chainsaw valkey-operator suite ==="
+    helm upgrade --install valkey-operator ./valkey-operator \
+      --namespace {{operator_namespace}} --create-namespace --wait --timeout 3m
     chainsaw test test/e2e/valkey-operator
 
 # One-command path: cluster up -> all layers -> teardown.

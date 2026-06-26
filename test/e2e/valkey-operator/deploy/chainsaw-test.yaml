@@ -1,0 +1,31 @@
+# Layer 3 — valkey-operator: deployment smoke.
+# Create a ValkeyCluster and assert the operator reconciles it to status Ready /
+# readyShards=3. Failure scenarios live in ../resilience.
+#
+# The operator is a cluster-singleton (cluster-scoped RBAC + cluster-wide watch), so
+# it is installed ONCE per cluster by `just e2e-operator` (into the
+# valkey-operator-system namespace) BEFORE Chainsaw runs — not per test. Each test
+# only creates/owns a ValkeyCluster in its own ephemeral namespace; the shared
+# operator reconciles all of them, so tests stay parallel-safe and isolated.
+#
+# Shared support files (valkeycluster.yaml, assert-cluster-ready.yaml) live at the
+# chart dir level and are referenced with `../`. $NAMESPACE is auto-injected.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: valkey-operator-deploy
+spec:
+  catch:
+    - describe:
+        apiVersion: valkey.io/v1alpha1
+        kind: ValkeyCluster
+    - script:
+        content: kubectl -n valkey-operator-system logs -l control-plane=controller-manager --tail=200 || true
+  steps:
+    - name: create-cluster
+      description: Apply the ValkeyCluster CR and wait for status Ready / readyShards=3.
+      try:
+        - apply:
+            file: ../valkeycluster.yaml
+        - assert:
+            file: ../assert-cluster-ready.yaml

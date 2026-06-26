@@ -1,53 +1,33 @@
-# Layer 3 — valkey-operator (cluster mode): install operator -> create cluster ->
-# readiness via .status -> primary pod-kill -> operator-driven recovery (replica
-# promotion / reconciliation) -> data-survival.
+# Layer 3 — valkey-operator: resilience / failure injection.
+# Create cluster -> seed keys across slots -> kill a primary pod -> operator promotes
+# its replica and reconciles back to Ready -> data survives.
 #
-# Notes:
-# - Chainsaw auto-injects $NAMESPACE and runs scripts with cwd = this test dir, so
-#   the chart is referenced as ../../../valkey-operator.
-# - Cluster pods are reached by pod-exec: the operator-managed Service name lives in
-#   the operator source (not this repo), so exec is the robust path. The minimal CR
-#   does not enable auth, so valkey-cli needs no credentials here.
-# - The primary pod is deleted with `kubectl delete` inside a script (its name is
-#   discovered dynamically, and Chainsaw's `delete` would block on the same-name
-#   pod the operator recreates).
+# See ../deploy/chainsaw-test.yaml for the shared conventions (the operator is
+# installed once per cluster by `just e2e-operator`, not per test). Cluster pods are
+# reached by pod-exec (the operator-managed Service name lives in the operator
+# source, not this repo). The minimal CR does not enable auth, so valkey-cli needs no
+# credentials. The primary pod is deleted with `kubectl delete` inside a script (its
+# name is discovered dynamically, and Chainsaw's `delete` would block on the
+# same-name pod the operator recreates).
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
-  name: valkey-operator
+  name: valkey-operator-resilience
 spec:
   catch:
     - describe:
         apiVersion: valkey.io/v1alpha1
         kind: ValkeyCluster
-    - describe:
-        apiVersion: v1
-        kind: Pod
-    - podLogs:
-        selector: control-plane=controller-manager
-    - events: {}
+    - script:
+        content: kubectl -n valkey-operator-system logs -l control-plane=controller-manager --tail=200 || true
   steps:
-    - name: install-operator
-      description: helm install the operator (public ghcr image) and wait for it to be Available.
-      try:
-        - script:
-            content: helm upgrade --install valkey-operator ../../../valkey-operator -n "$NAMESPACE"
-        - assert:
-            resource:
-              apiVersion: apps/v1
-              kind: Deployment
-              metadata:
-                name: valkey-operator
-              status:
-                availableReplicas: 1
-
     - name: create-cluster
       description: Apply the ValkeyCluster CR and wait for status Ready / readyShards=3.
       try:
         - apply:
-            file: valkeycluster.yaml
+            file: ../valkeycluster.yaml
         - assert:
-            file: assert-cluster-ready.yaml
+            file: ../assert-cluster-ready.yaml
 
     - name: seed-data
       description: Write keys across slots via cluster-mode SET on a cluster pod.
@@ -78,7 +58,7 @@ spec:
               done
               echo "could not find a primary pod"; exit 1
         - assert:
-            file: assert-cluster-ready.yaml
+            file: ../assert-cluster-ready.yaml
         - script:
             content: |
               set -eu

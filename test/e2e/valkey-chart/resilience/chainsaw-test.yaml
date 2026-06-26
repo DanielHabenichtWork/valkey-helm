@@ -1,43 +1,32 @@
-# Layer 3 — valkey (primary/replica) chart: deploy -> readiness -> pod-kill ->
-# recovery -> data-survival. Chainsaw owns its own liveness assertions; it does
-# NOT call `helm test` (that is the standalone smoke layer's job).
+# Layer 3 — valkey chart: resilience / failure injection.
+# Deploy -> seed+replicate -> kill a replica (self-heal + PVC data survival) ->
+# kill the primary (pod-restart recovery + AOF data survival). Chainsaw owns its own
+# liveness assertions; it does NOT call `helm test` (that is the smoke layer's job).
 #
-# Notes:
-# - Chainsaw auto-injects $NAMESPACE (the test's ephemeral namespace) and runs
-#   scripts with cwd = this test dir, so the chart is referenced as ../../../valkey.
-# - Pods are deleted with `kubectl delete` inside a script, NOT Chainsaw's `delete`
-#   operation: `delete` blocks until the object is gone, but the StatefulSet
-#   immediately recreates the pod with the same name, so that wait never resolves.
-# - valkey-cli reads the password from the chart-generated -auth Secret so it can't
-#   drift from values.yaml.
+# See ../deploy/chainsaw-test.yaml for the shared conventions (workDir, $NAMESPACE,
+# shared support files, global catch). Pods are deleted with `kubectl delete` inside
+# a script, NOT Chainsaw's `delete` (which blocks until the object is gone — the
+# StatefulSet recreates the pod with the same name, so that wait never resolves).
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
-  name: valkey-chart
+  name: valkey-chart-resilience
 spec:
-  # On any step failure, dump diagnostics for the whole namespace.
   catch:
-    - describe:
-        apiVersion: v1
-        kind: Pod
     - podLogs:
         selector: app.kubernetes.io/name=valkey
-    - events: {}
   steps:
     - name: install
       description: helm install the valkey chart in HA mode with auth.
       try:
         - script:
+            workDir: ../../../..
             content: |
               set -eu
-              helm dependency build ../../../valkey
-              helm upgrade --install valkey ../../../valkey -n "$NAMESPACE" -f values.yaml
-
-    - name: ready
-      description: All 3 pods (1 primary + 2 replicas) become Ready.
-      try:
+              helm dependency build ./valkey
+              helm upgrade --install valkey ./valkey -n "$NAMESPACE" -f test/e2e/valkey-chart/values.yaml
         - assert:
-            file: assert-ready.yaml
+            file: ../assert-ready.yaml
 
     - name: seed-data
       description: Write a sentinel key on the primary and confirm it replicates.
@@ -60,7 +49,7 @@ spec:
         - script:
             content: kubectl -n "$NAMESPACE" delete pod valkey-1
         - assert:
-            file: assert-ready.yaml
+            file: ../assert-ready.yaml
         - script:
             content: |
               set -eu
@@ -81,7 +70,7 @@ spec:
         - script:
             content: kubectl -n "$NAMESPACE" delete pod valkey-0
         - assert:
-            file: assert-ready.yaml
+            file: ../assert-ready.yaml
         - script:
             content: |
               set -eu

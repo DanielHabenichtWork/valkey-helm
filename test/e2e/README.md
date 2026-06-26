@@ -62,30 +62,50 @@ just e2e-down       # when finished
 
 ## Inspecting failures
 
-The Chainsaw suites have `catch` blocks that, on any step failure, dump pod
-descriptions, pod logs, and namespace events — so the cause is in the test output
-without extra digging. Chainsaw creates a fresh ephemeral namespace per test and
-deletes it on completion; use `just e2e-debug` + rerun if you need to poke at a
-cluster mid-failure (re-add the cluster, rerun, then `kubectl` before it cleans up).
+On any step failure, Chainsaw dumps namespace events + pod descriptions (configured
+globally in `.chainsaw.yaml` under `error.catch`) plus the pod logs each test
+requests in its own `catch` — so the cause is in the test output without extra
+digging. Chainsaw creates a fresh ephemeral namespace per test and deletes it on
+completion; use `just e2e-debug` + rerun if you need to poke at a cluster
+mid-failure (`kubectl` before it cleans up).
 
 ## Layout
 
+Each chart dir holds **multiple tests — one per subfolder**. `chainsaw test
+<chart-dir>` recurses and runs them all, so `just e2e-valkey` runs every test under
+`valkey-chart/`. Shared support files (values, assert manifests, CR) sit at the
+chart-dir level and are referenced from each test with `../`.
+
 ```
 test/e2e/
-  kind-config.yaml          # shared 4-node kind config (1 cp + 3 workers)
-  helm-test/                # layer 2 (smoke) — see HANDOVER.md
+  kind-config.yaml            # shared 4-node kind config (1 cp + 3 workers)
+  helm-test/                  # layer 2 (smoke) — see HANDOVER.md
     values.yaml
     HANDOVER.md
-  valkey-chart/             # layer 3 — primary/replica chart
-    chainsaw-test.yaml
-    values.yaml
-    assert-ready.yaml
-  valkey-operator/          # layer 3 — operator / cluster mode
-    chainsaw-test.yaml
-    valkeycluster.yaml
-    assert-cluster-ready.yaml
-.chainsaw.yaml              # Chainsaw config (timeouts) — repo root
+  valkey-chart/               # layer 3 — primary/replica chart
+    values.yaml               # shared HA values
+    assert-ready.yaml         # shared readiness assert
+    deploy/chainsaw-test.yaml       # install + readiness
+    resilience/chainsaw-test.yaml   # seed + replica-kill + primary-kill recovery
+  valkey-operator/            # layer 3 — operator / cluster mode
+    valkeycluster.yaml        # shared CR
+    assert-cluster-ready.yaml # shared status assert
+    deploy/chainsaw-test.yaml       # cluster Ready
+    resilience/chainsaw-test.yaml   # seed + primary-failure + promotion
+.chainsaw.yaml                # Chainsaw config (timeouts + global catch) — repo root
 ```
+
+**Adding a test:** create a new subfolder under the chart dir with a
+`chainsaw-test.yaml` (give it a unique `metadata.name`). It's picked up
+automatically — no Justfile or workflow change needed. Reuse the shared support
+files via `../`, or add scenario-specific ones in the new folder.
+
+> **Operator note:** the operator is a cluster-singleton (cluster-scoped RBAC +
+> cluster-wide watch), so `just e2e-operator` installs it **once** (cluster-wide,
+> into `valkey-operator-system`) before running Chainsaw. Each operator test then
+> only creates a `ValkeyCluster` in its own namespace and the shared operator
+> reconciles it. Don't add a per-test `helm install valkey-operator` — concurrent
+> tests would collide on the shared cluster-scoped ClusterRoles.
 
 ## CI
 
